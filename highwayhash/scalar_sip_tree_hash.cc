@@ -115,10 +115,16 @@ HH_U64 ScalarSipTreeHashT(const Lanes& key, const char* bytes,
   // Hash entire 32-byte packets.
   const size_t remainder = size & (kPacketSize - 1);
   const size_t truncated_size = size - remainder;
-  const HH_U64* packets = reinterpret_cast<const HH_U64*>(bytes);
+  // "bytes" has no alignment requirement, so load each 8-byte packet with
+  // memcpy instead of dereferencing a reinterpret_cast<HH_U64*> (which is
+  // undefined behavior for unaligned input under -fsanitize=alignment and
+  // faults on strict-alignment architectures).
+  const char* packets = bytes;
   for (size_t i = 0; i < truncated_size / kPacketSize; ++i) {
     for (int lane = 0; lane < kNumLanes; ++lane) {
-      const HH_U64 packet = *packets++;
+      HH_U64 packet;
+      memcpy(&packet, packets, sizeof(packet));
+      packets += sizeof(packet);
       state[lane].Update(packet);
     }
   }
@@ -135,9 +141,12 @@ HH_U64 ScalarSipTreeHashT(const Lanes& key, const char* bytes,
   char final_packet[kPacketSize] = {0};
   memcpy(final_packet, bytes + truncated_size, remainder - remainder_mod4);
   memcpy(final_packet + kPacketSize - 4, &packet4, sizeof(packet4));
-  packets = reinterpret_cast<const HH_U64*>(final_packet);
+  // Same unaligned-load fix as above: do not dereference a
+  // reinterpret_cast<HH_U64*> into the char array.
   for (int lane = 0; lane < kNumLanes; ++lane) {
-    state[lane].Update(packets[lane]);
+    HH_U64 packet;
+    memcpy(&packet, final_packet + lane * sizeof(HH_U64), sizeof(packet));
+    state[lane].Update(packet);
   }
 
   // Store the resulting hashes.
